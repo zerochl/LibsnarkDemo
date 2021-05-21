@@ -1,18 +1,29 @@
-libsnark merkle circuit example
+# 开发环境准备
+## 镜像基础环境
+Ubuntu 16.04
+## 如何使用
+```
+docker run -it -v 本机目录:要隐射的镜像内目录 libsnark bash
+```
+本机目录内存放零知识证明项目，要隐射的镜像内目录随便即可，例如/root/libsnarkdemo
 
-The example shows how to generate proof for one merkle path on one merkle tree with depth 3.
+1、 init 
 
-1/ init 
+进入项目根目录
  ```
  git submodule update --init --recursive
  ```
-2/ compile
+2、 compile
  ```
  mkdir build; cd build; cmake ..; make
  ```
  You can find the "merkle" binary under the merkle folder.
+ 
+ 在build文件夹下面会出现merkle文件夹，文件夹里面有名为merkle的binary文件，这个就是可执行文件
 
 ## 默克尔树证明
+
+depth = 3
 
 1、setup
 ```
