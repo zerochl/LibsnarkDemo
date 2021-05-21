@@ -7,7 +7,7 @@ include_directories(../libsnark)
 include_directories(../libsnark/depends/libfqfft/)
 link_directories(/usr/local/lib)
 
-add_executable(merkle main.cpp ../circuit/merklecircuit.h)
+add_executable(merkle main.cpp ../circuit/merklecircuit.h ../circuit/SampleEquationCircuit.h)
 
 target_link_libraries(merkle ff)
 target_link_libraries(merkle gmpxx)

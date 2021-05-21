@@ -6,6 +6,7 @@
 #include <fstream>
 #include <boost/optional.hpp>
 #include "../circuit/merklecircuit.h"
+#include "../circuit/SampleEquationCircuit.h"
 
 using namespace libsnark;
 
@@ -190,150 +191,263 @@ void calcAllLevels(std::vector<std::vector<libff::bit_vector>>& levels, size_t l
     }
 }
 
-int main(int argc, char* argv[]) {
-    libff::default_ec_pp::init_public_params();
+void merkleGenerate(char* argv[], size_t tree_depth) {
     typedef libff::default_ec_pp ppzksnark_ppT;
     typedef libff::Fr<ppzksnark_ppT> FieldT;
     typedef sha256_two_to_one_hash_gadget<FieldT> HashT;
 
+    const size_t digest_len = HashT::get_digest_len();
+    std::vector<merkle_authentication_node> path(tree_depth);
+
+    libff::bit_vector prev_hash(digest_len);
+    std::generate(prev_hash.begin(), prev_hash.end(), [&]() { return std::rand() % 2; });
+    libff::bit_vector leaf = prev_hash;
+
+    libff::bit_vector address_bits;
+
+    size_t address = 0;
+    for (long level = tree_depth-1; level >= 0; --level)
+    {
+        const bool computed_is_right = (std::rand() % 2);
+        address |= (computed_is_right ? 1ul << (tree_depth-1-level) : 0);
+        address_bits.push_back(computed_is_right);
+        libff::bit_vector other(digest_len);
+        std::generate(other.begin(), other.end(), [&]() { return std::rand() % 2; });
+
+        libff::bit_vector block = prev_hash;
+        block.insert(computed_is_right ? block.begin() : block.end(), other.begin(), other.end());
+        libff::bit_vector h = HashT::get_hash(block);
+
+        std::cout << *(binToHex<HashT>(block)) << std::endl;
+        std::cout  << "h: " << *(binToHex<HashT>(h)) << std::endl;
+        path[level] = other;
+
+        prev_hash = h;
+    }
+    libff::bit_vector root = prev_hash;
+
+    auto hexLeaf = binToHex<HashT>(leaf);
+    std::fstream mk("merkle.txt", std::ios_base::out);
+    mk << "leaf: " << *hexLeaf << std::endl; //Write out leaf
+    mk << "index: " << address << std::endl; //Write out index
+    mk << "path: ";                          //Write out path
+    for (int i = 0; i < path.size(); i++)
+        mk << *(binToHex<HashT>(path[i])) << " ";
+    mk << std::endl;
+    mk << "root: " << *(binToHex<HashT>(root));      //Write out root
+}
+
+void merkleSetup(char* argv[], size_t tree_depth) {
+    typedef libff::default_ec_pp ppzksnark_ppT;
+    typedef libff::Fr<ppzksnark_ppT> FieldT;
+    typedef sha256_two_to_one_hash_gadget<FieldT> HashT;
+
+    std::cout << "in setup" << std::endl;
+    // 准备CRS
+    auto keypair = generate_read_keypair<ppzksnark_ppT, FieldT, HashT>(tree_depth);
+    std::fstream pk("merkle_pk.raw", std::ios_base::out);
+    pk << keypair.pk;
+    pk.close();
+    std::fstream vk("merkle_vk.raw", std::ios_base::out);
+    vk << keypair.vk;
+    vk.close();
+}
+
+void merkleProve(char* argv[], size_t tree_depth) {
+    typedef libff::default_ec_pp ppzksnark_ppT;
+    typedef libff::Fr<ppzksnark_ppT> FieldT;
+    typedef sha256_two_to_one_hash_gadget<FieldT> HashT;
+
+    // 生成证明
+    //load pk，读取公共字符串
+    std::fstream f_pk("merkle_pk.raw", std::ios_base::in);
+    r1cs_gg_ppzksnark_proving_key<ppzksnark_ppT> pk;
+    f_pk >> pk;
+    f_pk.close();
+
+    libff::bit_vector leaf, root, address_bits(tree_depth);
+    size_t address;
+    std::vector<merkle_authentication_node> path(tree_depth);
+
+    //generate witness depth几层就有几个level
+    std::vector<std::vector<libff::bit_vector>> levels(tree_depth);
+    //level 2 leaves left most --> right most
+    // 计算最后一层节点数量
+    int leaf_count = std::pow(2, tree_depth);
+    // 先最后一层的节点的hash，为什么只计算最后一层，下面会从最后一层开始网上推导上一层的hash
+    for (int i = 0; i < leaf_count; i++) {
+        libff::bit_vector tmp = hash256<HashT>(argv[i+2]);
+        //std::cout << *binToHex<HashT>(tmp) << std::endl;
+        levels[tree_depth - 1].push_back(tmp);
+    }
+    // 从最后一层开始向上推导节点的hash
+    calcAllLevels<HashT>(levels, tree_depth-1);
+    // 计算root节点的hash
+    libff::bit_vector input = levels[0][0];
+    input.insert(input.end(), levels[0][1].begin(), levels[0][1].end());
+    root = HashT::get_hash(input);
+
+    // 获取某一个叶子节点，例如当前tree depth是3，那么address可以取值0-7
+    address = std::stoi(argv[10]);
+    leaf = levels[tree_depth-1][address];
+    std::cout << address << std::endl;
+    int addr = address;
+    // TODO 此步没有看太懂，看起来是一层层计算节点处于左边还是右边
+    for (int i = 0; i < tree_depth; i++) {
+        // 取右边第一位数字
+        int tmp = (addr & 0x01);
+        address_bits[i] = tmp;
+        // 类似左移一位
+        addr = addr / 2;
+        std::cout << address_bits[tree_depth-1-i] << std::endl;
+    }
+
+    //Fill in the path
+    size_t index = address;
+    for (int i = tree_depth - 1; i >= 0; i--) {
+        path[i] = address_bits[tree_depth-1-i] == 0 ? levels[i][index+1] : levels[i][index-1];
+        index = index / 2;
+    }
+    std::cout << "root is " << *binToHex<HashT>(root) << std::endl;
+
+//generate proof
+    auto proof = generate_read_proof<ppzksnark_ppT, FieldT, HashT>(
+            pk, tree_depth, leaf, root, path, address, address_bits);
+    if (proof != boost::none) {
+        std::cout << "Proof generated!" << std::endl;
+    }
+
+//save the proof
+    std::fstream pr("proof.raw", std::ios_base::out);
+    pr << (*proof);
+    pr.close();
+}
+
+void merkleVerify(char* argv[]) {
+    typedef libff::default_ec_pp ppzksnark_ppT;
+    typedef libff::Fr<ppzksnark_ppT> FieldT;
+    typedef sha256_two_to_one_hash_gadget<FieldT> HashT;
+
+    //load proof
+    std::fstream pr("proof.raw", std::ios_base::in);
+    r1cs_gg_ppzksnark_proof<ppzksnark_ppT> proof;
+    pr >> proof;
+    pr.close();
+//load vk
+    std::fstream vkf("merkle_vk.raw", std::ios_base::in);
+    r1cs_gg_ppzksnark_verification_key<ppzksnark_ppT> vk;
+    vkf >> vk;
+    vkf.close();
+
+//load root
+    std::string r(argv[2]);
+    libff::bit_vector root = hexToBin(r);
+//verify the proof
+    bool ret = verify_read_proof<ppzksnark_ppT, FieldT>(vk, proof, root);
+    if (ret) {
+        std::cout << "Verification pass!" << std::endl;
+    } else {
+        std::cout << "Verification failed!" << std::endl;
+    }
+}
+
+void equationSetup() {
+    typedef libff::default_ec_pp ppzksnark_ppT;
+    typedef libff::Fr<ppzksnark_ppT> FieldT;
+
+    std::cout << "in equation setup" << std::endl;
+    protoboard<FieldT> pb;
+
+    sample::EquationCircuit ec(pb);
+    auto keypair = ec.setup(pb);
+
+    std::fstream pk("equation_pk.raw", std::ios_base::out);
+    pk << keypair.pk;
+    pk.close();
+    std::fstream vk("equation_vk.raw", std::ios_base::out);
+    vk << keypair.vk;
+    vk.close();
+}
+
+void equationProve() {
+    typedef libff::default_ec_pp ppzksnark_ppT;
+    typedef libff::Fr<ppzksnark_ppT> FieldT;
+
+    std::cout << "in equation prove" << std::endl;
+
+    //load pk，读取公共字符串
+    std::fstream f_pk("equation_pk.raw", std::ios_base::in);
+    r1cs_gg_ppzksnark_proving_key<ppzksnark_ppT> pk;
+    f_pk >> pk;
+    f_pk.close();
+
+    protoboard<FieldT> pb;
+    sample::EquationCircuit ec(pb);
+
+    ec.generate_r1cs_constraints(pb);
+    ec.generate_r1cs_witness(pb);
+    if (!pb.is_satisfied()) {
+        std::cout << "pb is not satisfied" << std::endl;
+        return;
+    }
+
+    // 调用r1cs_gg_ppzksnark_prover方法进行proof的生成，输入参数为 CRS中的PK、public input、private witness。
+    // 此处可以明显看到，并没有明确的输入电路板信息，唯一可能与电路相关联的就是keypair.pk
+    const r1cs_gg_ppzksnark_proof<default_r1cs_gg_ppzksnark_pp> proof = r1cs_gg_ppzksnark_prover<default_r1cs_gg_ppzksnark_pp>(pk, pb.primary_input(), pb.auxiliary_input());
+
+    //save the proof
+    std::fstream pr("equation_proof.raw", std::ios_base::out);
+    pr << (proof);
+    pr.close();
+}
+
+void equationVerify() {
+    typedef libff::default_ec_pp ppzksnark_ppT;
+    typedef libff::Fr<ppzksnark_ppT> FieldT;
+
+    std::cout << "in equation verify" << std::endl;
+    //load proof
+    std::fstream pr("equation_proof.raw", std::ios_base::in);
+    r1cs_gg_ppzksnark_proof<ppzksnark_ppT> proof;
+    pr >> proof;
+    pr.close();
+    //load vk
+    std::fstream vkf("equation_vk.raw", std::ios_base::in);
+    r1cs_gg_ppzksnark_verification_key<ppzksnark_ppT> vk;
+    vkf >> vk;
+    vkf.close();
+
+    // 准备public input
+    r1cs_primary_input<FieldT> input;
+    input.push_back(FieldT(35));
+
+    // 调用r1cs_gg_ppzksnark_verifier_strong_IC方法进行proof校验，输入参数为 CRS中的VK、public input、proof
+    bool verified = r1cs_gg_ppzksnark_verifier_strong_IC<default_r1cs_gg_ppzksnark_pp>(vk, input, proof);
+    if (verified) {
+        std::cout << "Verification pass!" << std::endl;
+    } else {
+        std::cout << "Verification failed!" << std::endl;
+    }
+}
+
+int main(int argc, char* argv[]) {
+    libff::default_ec_pp::init_public_params();
+
     const size_t tree_depth = 3;
-    if (std::string(argv[1]) == "generate") {
-        const size_t digest_len = HashT::get_digest_len();
-        std::vector<merkle_authentication_node> path(tree_depth);
-
-        libff::bit_vector prev_hash(digest_len);
-        std::generate(prev_hash.begin(), prev_hash.end(), [&]() { return std::rand() % 2; });
-        libff::bit_vector leaf = prev_hash;
-
-        libff::bit_vector address_bits;
-
-        size_t address = 0;
-        for (long level = tree_depth-1; level >= 0; --level)
-        {
-            const bool computed_is_right = (std::rand() % 2);
-            address |= (computed_is_right ? 1ul << (tree_depth-1-level) : 0);
-            address_bits.push_back(computed_is_right);
-            libff::bit_vector other(digest_len);
-            std::generate(other.begin(), other.end(), [&]() { return std::rand() % 2; });
-
-            libff::bit_vector block = prev_hash;
-            block.insert(computed_is_right ? block.begin() : block.end(), other.begin(), other.end());
-            libff::bit_vector h = HashT::get_hash(block);
-
-            std::cout << *(binToHex<HashT>(block)) << std::endl;
-            std::cout  << "h: " << *(binToHex<HashT>(h)) << std::endl;
-            path[level] = other;
-
-            prev_hash = h;
-        }
-        libff::bit_vector root = prev_hash;
-
-        auto hexLeaf = binToHex<HashT>(leaf);
-        std::fstream mk("merkle.txt", std::ios_base::out);
-        mk << "leaf: " << *hexLeaf << std::endl; //Write out leaf
-        mk << "index: " << address << std::endl; //Write out index
-        mk << "path: ";                          //Write out path
-        for (int i = 0; i < path.size(); i++)
-            mk << *(binToHex<HashT>(path[i])) << " ";
-        mk << std::endl;
-        mk << "root: " << *(binToHex<HashT>(root));      //Write out root
+    if (std::string(argv[1]) == "equationSetup") {
+        equationSetup();
+    } else if (std::string(argv[1]) == "equationProve") {
+        equationProve();
+    } else if (std::string(argv[1]) == "equationVerify") {
+        equationVerify();
+    } else if (std::string(argv[1]) == "generate") {
+        merkleGenerate(argv, tree_depth);
     } else if (std::string(argv[1]) == std::string("setup")) {
-        std::cout << "in setup" << std::endl;
-        // 准备CRS
-        auto keypair = generate_read_keypair<ppzksnark_ppT, FieldT, HashT>(tree_depth);
-        std::fstream pk("merkle_pk.raw", std::ios_base::out);
-        pk << keypair.pk;
-        pk.close();
-        std::fstream vk("merkle_vk.raw", std::ios_base::out);
-        vk << keypair.vk;
-        vk.close();
+        merkleSetup(argv, tree_depth);
     } else if (std::string(argv[1]) == std::string("prove")) {
-        // 生成证明
-        //load pk，读取公共字符串
-        std::fstream f_pk("merkle_pk.raw", std::ios_base::in);
-        r1cs_gg_ppzksnark_proving_key<ppzksnark_ppT> pk;
-        f_pk >> pk;
-        f_pk.close();
-
-        libff::bit_vector leaf, root, address_bits(tree_depth);
-        size_t address;
-        std::vector<merkle_authentication_node> path(tree_depth);
-
-        //generate witness depth几层就有几个level
-        std::vector<std::vector<libff::bit_vector>> levels(tree_depth);
-        //level 2 leaves left most --> right most
-        // 计算最后一层节点数量
-	    int leaf_count = std::pow(2, tree_depth);
-	    // 先最后一层的节点的hash，为什么只计算最后一层，下面会从最后一层开始网上推导上一层的hash
-        for (int i = 0; i < leaf_count; i++) {
-            libff::bit_vector tmp = hash256<HashT>(argv[i+2]);
-            //std::cout << *binToHex<HashT>(tmp) << std::endl;
-            levels[tree_depth - 1].push_back(tmp);
-        }
-        // 从最后一层开始向上推导节点的hash
-	    calcAllLevels<HashT>(levels, tree_depth-1);
-	    // 计算root节点的hash
-        libff::bit_vector input = levels[0][0];
-        input.insert(input.end(), levels[0][1].begin(), levels[0][1].end());
-        root = HashT::get_hash(input);
-
-        // 获取某一个叶子节点，例如当前tree depth是3，那么address可以取值0-7
-        address = std::stoi(argv[10]);
-        leaf = levels[tree_depth-1][address];
-        std::cout << address << std::endl;
-        int addr = address;
-        // TODO 此步没有看太懂，看起来是一层层计算节点处于左边还是右边
-        for (int i = 0; i < tree_depth; i++) {
-            // 取右边第一位数字
-            int tmp = (addr & 0x01);
-            address_bits[i] = tmp;
-            // 类似左移一位
-            addr = addr / 2;
-            std::cout << address_bits[tree_depth-1-i] << std::endl;
-        }
-
-        //Fill in the path
-        size_t index = address;
-        for (int i = tree_depth - 1; i >= 0; i--) {
-            path[i] = address_bits[tree_depth-1-i] == 0 ? levels[i][index+1] : levels[i][index-1];
-            index = index / 2;
-        }
-        std::cout << "root is " << *binToHex<HashT>(root) << std::endl;
-
-	//generate proof
-        auto proof = generate_read_proof<ppzksnark_ppT, FieldT, HashT>(
-                pk, tree_depth, leaf, root, path, address, address_bits);
-        if (proof != boost::none) {
-            std::cout << "Proof generated!" << std::endl;
-        }
-
-	//save the proof
-        std::fstream pr("proof.raw", std::ios_base::out);
-        pr << (*proof);
-        pr.close();
-
+        merkleProve(argv, tree_depth);
     } else if (std::string(argv[1]) == std::string("verify")) {
-	//load proof
-        std::fstream pr("proof.raw", std::ios_base::in);
-        r1cs_gg_ppzksnark_proof<ppzksnark_ppT> proof;
-        pr >> proof;
-        pr.close();
-	//load vk
-        std::fstream vkf("merkle_vk.raw", std::ios_base::in);
-        r1cs_gg_ppzksnark_verification_key<ppzksnark_ppT> vk;
-        vkf >> vk;
-        vkf.close();
-
-	//load root
-        std::string r(argv[2]);
-        libff::bit_vector root = hexToBin(r);
-	//verify the proof
-        bool ret = verify_read_proof<ppzksnark_ppT, FieldT>(vk, proof, root);
-        if (ret) {
-            std::cout << "Verification pass!" << std::endl;
-        } else {
-            std::cout << "Verification failed!" << std::endl;
-        }
+	    merkleVerify(argv);
     }
 
     return 0;
