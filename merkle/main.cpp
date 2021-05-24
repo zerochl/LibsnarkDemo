@@ -7,6 +7,7 @@
 #include <boost/optional.hpp>
 #include "../circuit/merklecircuit.h"
 #include "../circuit/SampleEquationCircuit.h"
+#include "../circuit/FishingBoatCircuit.h"
 
 using namespace libsnark;
 
@@ -430,6 +431,94 @@ void equationVerify() {
     }
 }
 
+void fishingBoatSetup() {
+    typedef libff::default_ec_pp ppzksnark_ppT;
+    typedef libff::Fr<ppzksnark_ppT> FieldT;
+
+    std::cout << "in fishingBoat setup" << std::endl;
+    protoboard<FieldT> pb;
+
+    sample::FishingBoatCircuit fbc(pb);
+    auto keypair = fbc.setup(pb);
+
+    std::fstream pk("fishingBoat_pk.raw", std::ios_base::out);
+    pk << keypair.pk;
+    pk.close();
+    std::fstream vk("fishingBoat_vk.raw", std::ios_base::out);
+    vk << keypair.vk;
+    vk.close();
+}
+
+void fishingBoatProve() {
+    typedef libff::default_ec_pp ppzksnark_ppT;
+    typedef libff::Fr<ppzksnark_ppT> FieldT;
+
+    std::cout << "in fishingBoat prove" << std::endl;
+
+    //load pk，读取公共字符串
+    std::fstream f_pk("fishingBoat_pk.raw", std::ios_base::in);
+    r1cs_gg_ppzksnark_proving_key<ppzksnark_ppT> pk;
+    f_pk >> pk;
+    f_pk.close();
+
+    std::cout << "in fishingBoat prove start new fbc" << std::endl;
+    protoboard<FieldT> pb;
+    sample::FishingBoatCircuit fbc(pb);
+
+    std::cout << "in fishingBoat prove before generate_r1cs_constraints" << std::endl;
+    fbc.generate_r1cs_constraints(pb);
+    std::cout << "in fishingBoat prove before generate_r1cs_witness" << std::endl;
+    fbc.generate_r1cs_witness(pb);
+    if (!pb.is_satisfied()) {
+        std::cout << "pb is not satisfied" << std::endl;
+        return;
+    }
+
+    std::cout << "in fishingBoat prove before r1cs_gg_ppzksnark_prover" << std::endl;
+    // 调用r1cs_gg_ppzksnark_prover方法进行proof的生成，输入参数为 CRS中的PK、public input、private witness。
+    // 此处可以明显看到，并没有明确的输入电路板信息，唯一可能与电路相关联的就是keypair.pk
+    const r1cs_gg_ppzksnark_proof<default_r1cs_gg_ppzksnark_pp> proof = r1cs_gg_ppzksnark_prover<default_r1cs_gg_ppzksnark_pp>(pk, pb.primary_input(), pb.auxiliary_input());
+
+    std::cout << "in fishingBoat prove before write fishingBoat_proof" << std::endl;
+    //save the proof
+    std::fstream pr("fishingBoat_proof.raw", std::ios_base::out);
+    pr << (proof);
+    pr.close();
+}
+
+void fishingBoatVerify() {
+    typedef libff::default_ec_pp ppzksnark_ppT;
+    typedef libff::Fr<ppzksnark_ppT> FieldT;
+
+    std::cout << "in fishingBoat verify" << std::endl;
+    //load proof
+    std::fstream pr("fishingBoat_proof.raw", std::ios_base::in);
+    r1cs_gg_ppzksnark_proof<ppzksnark_ppT> proof;
+    pr >> proof;
+    pr.close();
+    //load vk
+    std::fstream vkf("fishingBoat_vk.raw", std::ios_base::in);
+    r1cs_gg_ppzksnark_verification_key<ppzksnark_ppT> vk;
+    vkf >> vk;
+    vkf.close();
+
+    // 准备public input
+    r1cs_primary_input<FieldT> input;
+    input.push_back(FieldT(30));
+    input.push_back(FieldT(60));
+    input.push_back(FieldT(40));
+    input.push_back(FieldT(60));
+    input.push_back(FieldT(4));
+
+    // 调用r1cs_gg_ppzksnark_verifier_strong_IC方法进行proof校验，输入参数为 CRS中的VK、public input、proof
+    bool verified = r1cs_gg_ppzksnark_verifier_strong_IC<default_r1cs_gg_ppzksnark_pp>(vk, input, proof);
+    if (verified) {
+        std::cout << "Verification pass!" << std::endl;
+    } else {
+        std::cout << "Verification failed!" << std::endl;
+    }
+}
+
 int main(int argc, char* argv[]) {
     libff::default_ec_pp::init_public_params();
 
@@ -440,6 +529,12 @@ int main(int argc, char* argv[]) {
         equationProve();
     } else if (std::string(argv[1]) == "equationVerify") {
         equationVerify();
+    } else if (std::string(argv[1]) == "fishingBoatSetup") {
+        fishingBoatSetup();
+    } else if (std::string(argv[1]) == "fishingBoatProve") {
+        fishingBoatProve();
+    } else if (std::string(argv[1]) == "fishingBoatVerify") {
+        fishingBoatVerify();
     } else if (std::string(argv[1]) == "generate") {
         merkleGenerate(argv, tree_depth);
     } else if (std::string(argv[1]) == std::string("setup")) {
