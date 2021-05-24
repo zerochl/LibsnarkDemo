@@ -64,3 +64,32 @@ Record down the root information, which is used on verify.
 ```
 ./merkle equationVerify
 ```
+## 渔船位置零知识证明
+渔船 无需透露自己的具体位置，就可以向监管机构证明自己处于划定的 合法捕捞区内
+文章描述https://flur.ee/2020/02/05/using-zero-knowledge-proofs-with-fluree/
+snarkjs实现：https://github.com/fluree/example-zero-knowledge/blob/main/src/circuits/InRange.circom
+
+1、setup
+```
+./merkle fishingBoatSetup
+```
+2、prove
+
+初始化值硬编码在代码中了：
+
+维度限制：30-60
+
+经度限制：40-60
+
+渔船位置（维度，经度）：40，50
+
+多定义了一个out，表明每一个判别式的句式成立，即less为true，int类型表示为1，四个句式加一起out就为4.
+```
+./merkle fishingBoatProve
+```
+3、verify
+
+
+```
+./merkle fishingBoatVerify
+```
