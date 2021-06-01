@@ -1,3 +1,6 @@
+# 运行路印电路demo请前往circuit目录
+
+
 # Loopring Protocol (V3) using zkSNARKs
 
 ## About

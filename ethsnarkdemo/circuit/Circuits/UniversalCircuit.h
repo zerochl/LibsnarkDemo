@@ -545,6 +545,8 @@ class UniversalCircuit : public Circuit
     DualVariableGadget timestamp;
     DualVariableGadget protocolTakerFeeBips;
     DualVariableGadget protocolMakerFeeBips;
+    // unique_ptr: C++ 11用法，无法copy,无法赋值，只能移动赋值：unique_ptr<int> pInt2 = std::move(pInt); 指针析构之后资源也会被析构
+    // 即函数执行结束会自动释放资源
     std::unique_ptr<ToBitsGadget> numConditionalTransactions;
     DualVariableGadget operatorAccountID;
 

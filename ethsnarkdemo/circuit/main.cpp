@@ -280,6 +280,8 @@ std::string proveCircuit(ProverContextT &context, Loopring::Circuit *circuit)
 {
     std::cout << "Generating proof..." << std::endl;
     auto begin = now();
+    // 执行prove生成操作，context内有proof相关的信息，pb里面其实也有，这里的生成就有别与libsnark了
+    // libsnark groth16 proof的生成只需要pb，public input，private input,而这三个信息pb电路板里面已经都包含了
     std::string jProof = ethsnarks::prove(context, circuit->getPb());
     unsigned int elapsed_ms = elapsed_time_ms(begin);
     elapsed_ms = elapsed_ms == 0 ? 1 : elapsed_ms;
@@ -396,6 +398,7 @@ void runServer(
 
     // Setup the context a single time
     ProverContextT context;
+    // 解析provingKeyFilename的文件内容，并赋值给context.provingKey
     loadProvingKey(provingKeyFilename, context.provingKey);
     context.constraint_system = &(circuit->getPb().constraint_system);
     context.config = config;
@@ -672,18 +675,6 @@ void ZeroDepositSetup(char **argv) {
     // 打印内存相关的使用信息
     printMemoryUsage();
 
-//#if 0
-//    std::cout << "in if 0" << std::endl;
-//    unsigned int totalCoeffs = 0;
-//    for (size_t i = 0; i < pb.constraint_system.constraints.size(); ++i)
-//    {
-//        totalCoeffs += pb.constraint_system.constraints[i]->getA().getTerms().size();
-//        totalCoeffs += pb.constraint_system.constraints[i]->getB().getTerms().size();
-//        totalCoeffs += pb.constraint_system.constraints[i]->getC().getTerms().size();
-//    }
-//    std::cout << "num coefficients: " << totalCoeffs << std::endl;
-//    std::cout << "num unique coefficients: " << libsnark::ConstantStorage<FieldT>::getInstance().constants.size() << std::endl;
-//#endif
     // 生成CRS文件
     generateKeyPair(pb, baseFilename);
 
@@ -702,7 +693,7 @@ void ZeroDepositProve(char **argv) {
 
     // 定义电路板
     ethsnarks::ProtoboardT pb;
-    // 创建总电路
+    // 创建总电路，创建完成之后会立即执行R1CS的生成
     Loopring::Circuit *circuit = createCircuit(blockType, blockSize, pb);
 
     // shrink_to_fit：释放vector内存
@@ -717,24 +708,27 @@ void ZeroDepositProve(char **argv) {
         return;
     }
 
+    // 填入witness
     if (!generateWitness(circuit, input)) {
         std::cout << "in ZeroDepositProve generateWitness." << std::endl;
         return;
     }
-
+    // 验证电路是否正确，其实是验证传入的witness是否正确，例如方程x^3 == out，如果输入的x=3，out != 27，那么电路验证就是非法的
+    // 即验证电路的各逻辑门输入输出是否正确，通过此方法来判断：circuit->getPb().is_satisfied()
     if (!validateCircuit(circuit)) {
         std::cout << "in ZeroDepositProve circuit invalidate." << std::endl;
         return;
     }
 
     // Load in the config
-    std::cout << "Start load Config" << std::endl;
+    // 此配置文件为ethsnark的配置信息，/src/prover_config.hpp文件内定义，属于编译相关的一些基础配置，例如编译线程数量
     libsnark::Config config = loadConfig("config.json");
     std::cout << "Config: " << config << std::endl;
 
     const char *proofFilename = "proof.raw";
 
 #ifdef GPU_PROVE
+    // 是否使用GPU prove由cmake配置决定，正常使用的都是CPU计算
     std::cout << "in ZeroDepositProve GPU Prove: Generate inputsFile." << std::endl;
     std::string inputsFilename = baseFilename + "_inputs.raw";
     auto begin = now();
@@ -742,7 +736,9 @@ void ZeroDepositProve(char **argv) {
     print_time(begin, "write input");
 #else
     std::cout << "in ZeroDepositProve not GPU Prove" << std::endl;
+    // ProverContextT 即 libsnark::ProverContext<ppT>
     ProverContextT context;
+    // 解析provingKeyFilename的文件内容，并赋值给context.provingKey
     loadProvingKey(provingKeyFilename, context.provingKey);
     context.constraint_system = &pb.constraint_system;
     context.config = config;
@@ -763,7 +759,9 @@ void ZeroDepositProve(char **argv) {
 
 void ZeroDepositVerify(char **argv) {
     std::cout << "in ZeroDepositVerify" << std::endl;
-
+    // 参数1：name，看起来没有用到
+    // 参数2：也没用到，必须大于等于3，有点神经
+    // 参数3：size为3的字符串数组。第一个：参数2小于3时会作为日志打印出来；第二个：vk的json文件；第三个：proof json文件
     if (stub_main_verify("loop", 3, (const char **)(argv + 2))) {
         std::cout << "in ZeroDepositVerify verify error." << std::endl;
         return;

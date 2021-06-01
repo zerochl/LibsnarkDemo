@@ -302,6 +302,7 @@ class UnsafeSubGadget : public GadgetT
             prefix),
           value(_value),
           sub(_sub),
+          // make_variable：创建variable变量，类似于：sum.allocate(pb, FMT(prefix, ".sum"));
           sum(make_variable(pb, FMT(prefix, ".sum")))
     {
     }
@@ -313,11 +314,13 @@ class UnsafeSubGadget : public GadgetT
 
     void generate_r1cs_witness()
     {
+        // value与sub是外部传入的电路节点，值由外部设置，此处只负责当前子电路创建的sum节点
         pb.val(sum) = pb.val(value) - pb.val(sub);
     }
 
     void generate_r1cs_constraints()
     {
+        // 逻辑关系：（value - sub）* 1 = sum
         pb.add_r1cs_constraint(
           ConstraintT( //
             value - sub,
